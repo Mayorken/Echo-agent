@@ -57,6 +57,18 @@ export class EchoClient {
     return JSON.parse(new TextDecoder().decode(plaintext));
   }
 
+  /**
+   * Encrypt and upload data to Filecoin without writing on-chain.
+   * Returns the CID and integrity hash (content-addressed = tamper-evident).
+   */
+  async storeEncrypted(data: unknown, encryptionKey: Uint8Array): Promise<{ cid: string; integrityHash: string }> {
+    const plaintext = new TextEncoder().encode(JSON.stringify(data));
+    const integrityHash = ethers.keccak256(plaintext);
+    const encrypted = await encrypt(plaintext, encryptionKey);
+    const cid = await this.storage.put(encrypted);
+    return { cid, integrityHash };
+  }
+
   async grantAccess(appAddress: string): Promise<ethers.TransactionReceipt> {
     const tx = await this.contract.grantAccess(appAddress);
     return tx.wait();
