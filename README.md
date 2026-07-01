@@ -13,6 +13,10 @@ working memory — facts, decisions, project context — lives on Filecoin inste
 a single process's RAM. Kill the agent, switch it from OpenAI to Claude, and it picks
 up exactly where it left off. No re-explaining. No starting over.
 
+Every action the agent takes is also logged as a tamper-evident record on Filecoin —
+each entry gets its own content-addressed CID, and the full audit trail is anchored
+on-chain as a single verifiable proof.
+
 ## Architecture
 
 ```
@@ -20,72 +24,130 @@ Agent (Vercel AI SDK)
  ├─ Provider: OpenAI (gpt-4o)      ─┐
  ├─ Provider: Anthropic (Claude)   ─┤  swappable — same tool interface
  └─ Tools:
-      save_memory → EchoMemoryClient.save() → encrypt → Filecoin + on-chain registry
-      load_memory → EchoMemoryClient.load() → fetch → decrypt → inject into context
+      save_memory   → encrypt → Synapse SDK (Filecoin Onchain Cloud) → on-chain registry
+      load_memory   → on-chain lookup → Synapse download → decrypt → inject
+      log_action    → encrypt → Synapse (individual CID per action)
+      flush_action_log → batch manifest → Synapse + on-chain anchor
 ```
 
-`src/tools/echo-memory-client.ts` is the **only file that needs real Echo SDK wiring**.
-Everything else (agent loop, tools, CLI) talks to that interface and doesn't know or
-care how memory is actually persisted.
+### How it works
+
+```
+save_memory flow:
+  snapshot → JSON → AES-256-GCM encrypt(derived key) → synapse.storage.upload
+  → contract.updateMemory(cid, keccak256(plaintext)) → { cid, txHash }
+
+load_memory flow:
+  contract.getMemory(wallet) → [cid, integrityHash]
+  → synapse.storage.download(cid) → decrypt → verify keccak256 === integrityHash → snapshot
+
+log_action flow:
+  action record → encrypt → synapse.storage.upload → { cid, integrityHash }
+  (accumulated in memory, flushed on-chain via flush_action_log)
+```
+
+### Project structure
+
+```
+src/
+├── agent.ts                    # Agent loop (generateText + tools)
+├── providers.ts                # OpenAI / Anthropic provider switching
+├── index.ts                    # CLI entry point + demo scripts
+├── echo/                       # TypeScript port of Echo SDK core
+│   ├── client.ts               # EchoClient: contract + storage + crypto
+│   ├── crypto.ts               # AES-256-GCM encrypt/decrypt + key derivation
+│   ├── storage.ts              # Storage adapters (Synapse SDK / Lighthouse)
+│   ├── abi.json                # EchoMemoryRegistry V3 contract ABI
+│   └── index.ts                # Barrel export
+└── tools/
+    ├── echo-memory-client.ts   # High-level memory + action log client
+    └── memory-tools.ts         # Vercel AI SDK tool definitions
+```
 
 ## Setup
 
 ```bash
 npm install
 cp .env.example .env
-# fill in OPENAI_API_KEY, ANTHROPIC_API_KEY, and your Echo SDK credentials
 ```
 
+Fill in `.env`:
+
+| Variable | Required | Where to get it |
+|---|---|---|
+| `OPENAI_API_KEY` | Yes | https://platform.openai.com/api-keys |
+| `ANTHROPIC_API_KEY` | Yes | https://console.anthropic.com/settings/keys |
+| `ECHO_PRIVATE_KEY` | Yes | Your wallet private key (same as Echo deployment) |
+| `ECHO_REGISTRY_CONTRACT_ADDRESS` | Yes | Pre-filled in `.env.example` (Calibration testnet) |
+| `ECHO_RPC_URL` | Yes | Pre-filled in `.env.example` |
+| `ECHO_STORAGE_PROVIDER` | No | `synapse` (default, recommended) or `lighthouse` |
+| `ECHO_LIGHTHOUSE_API_KEY` | Only if lighthouse | https://files.lighthouse.storage |
+
+### Wallet funding (Calibration testnet)
+
+The wallet needs tFIL for gas and tUSDFC for storage payments:
+
+1. **tFIL**: https://faucet.calibnet.chainsafe-fil.io — paste your wallet address
+2. **tUSDFC**: https://forest-explorer.chainsafe.dev/faucet/calibration
+
 ## Run the demo
+
+### Combined (in-process)
 
 ```bash
 npm run demo:switch
 ```
 
-This runs the kill-and-resurrect flow: Phase 1 agent runs on OpenAI, saves memory.
-Phase 2 simulates a fresh process on Claude, loads memory, and continues with zero
-re-explaining.
+Both phases run in one process. Memory still round-trips through Filecoin — not
+shared in-memory.
 
-## TODO before submission
+### Two-process (the real proof)
 
-- [ ] Wire `EchoMemoryClient.save()` / `.load()` to the real Echo SDK
-      (`github.com/Mayorken/Echo`) instead of the current stubs
-- [ ] Confirm `claude-sonnet-4-5` / `gpt-4o` model strings are current at build time
-- [ ] Add a real "process kill" (two separate `node` invocations sharing only the
-      Filecoin-backed session, not a simulated in-process reset) for the recorded demo
-- [ ] Optional: add a `log_action` tool that writes a tamper-evident record of each
-      tool call to Filecoin (re-uses the same CID/tx-hash proof pattern as memory) —
-      strengthens the "proofs" angle of the theme alongside "memory"
-- [ ] Record the walkthrough video (script pattern: same as the Cycle 1 demo —
-      hook → problem → live demo → proof → close)
-- [ ] Write the submission blurb (reuse the Echo Cycle 1 voice: short, concrete,
-      one differentiator up front)
+```bash
+# Terminal 1: Agent runs on OpenAI, saves memory to Filecoin, exits
+npm run demo:save
 
-## Milestone plan (Jun 29 – Jul 10)
+# Close the terminal. Open a new one.
 
-**Jun 29 – Jul 3 (register + scaffold)**
-- Jun 29–30: Register on Loops House. Scaffold repo (done — this repo).
-- Jul 1–2: Wire real Echo SDK into `echo-memory-client.ts`. Get `save`/`load`
-  actually round-tripping through Filecoin (not stubs).
-- Jul 3: End-to-end test of the single-provider flow (agent saves + loads memory
-  correctly on one provider, e.g. OpenAI only). Lock registration before deadline.
+# Terminal 2: Fresh process, Agent runs on Claude, loads from Filecoin
+npm run demo:load
+```
 
-**Jul 4 – Jul 10 (build + submit window)**
-- Jul 4: Wire Anthropic provider. Get the literal two-process kill-and-resurrect
-  demo working (not simulated — actually kill and restart).
-- Jul 5: Add the proof/log angle if time allows (`log_action` tool — strengthens
-  theme coverage beyond just memory).
-- Jul 6–7: Polish CLI output / build a minimal web UI if time allows (optional —
-  CLI demo is sufficient, polish only if ahead of schedule).
-- Jul 8: Record the walkthrough video. Multiple takes if needed.
-- Jul 9: Write submission blurb, prepare repo (README, clean commit history,
-  license). Push to `Landrush-ltd` or personal org per your preference.
-- Jul 10: Submit. Buffer day — do not start anything new.
+If Claude recalls the project details with zero re-explaining, the demo worked —
+context survived a process kill AND a provider switch, backed entirely by Filecoin.
+
+## Agent tools
+
+| Tool | What it does |
+|---|---|
+| `save_memory` | Encrypts facts + summary → uploads to Filecoin → anchors CID on-chain |
+| `load_memory` | Reads CID from on-chain → fetches from Filecoin → decrypts → injects into context |
+| `log_action` | Records a single agent action to Filecoin (encrypted, content-addressed CID) |
+| `flush_action_log` | Batches all logged actions into a manifest → uploads + anchors on-chain |
+
+## Live deployment
+
+Uses the same contract as Echo:
+
+| | |
+|---|---|
+| **Proxy (permanent address)** | `0x962C42f208d89D5bF1698E3397BC78176D70cE0c` |
+| **Network** | Filecoin Calibration (chainId 314159) |
+| **Explorer** | https://calibration.filscan.io/address/0x962C42f208d89D5bF1698E3397BC78176D70cE0c |
+
+## Why Filecoin
+
+The portability promise only works if the storage is genuinely permanent and
+user-controlled. Filecoin's perpetual-storage mechanism means context doesn't
+disappear when a company shuts down. Content addressing (CIDs) makes every
+record tamper-evident by design. And programmable access control via FVM means
+the user's permissions are code on a public network, not a policy someone
+could quietly change.
 
 ## Tech stack
 
-- **Agent framework:** Vercel AI SDK (`ai`, `@ai-sdk/openai`, `@ai-sdk/anthropic`) —
-  TypeScript-native, unified tool-calling across providers, minimal overhead
-- **Memory:** Echo SDK (AES-256-GCM client-side encryption, Filecoin/FVM on-chain
-  registry, Lighthouse storage adapter)
+- **Agent framework:** Vercel AI SDK (`ai`, `@ai-sdk/openai`, `@ai-sdk/anthropic`)
+- **Memory + proofs:** Echo SDK (AES-256-GCM encryption, Filecoin/FVM on-chain registry)
+- **Storage:** Synapse SDK (@filoz/synapse-sdk) — Filecoin Onchain Cloud with PDP proofs
+- **Smart contract:** EchoMemoryRegistry V3 (UUPS upgradeable, OpenZeppelin v5)
 - **Language:** TypeScript / Node 18+
