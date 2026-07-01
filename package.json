@@ -13,18 +13,20 @@
     "demo:load": "tsx src/index.ts --demo=load"
   },
   "dependencies": {
-    "ai": "^4.0.0",
-    "@ai-sdk/openai": "^1.0.0",
     "@ai-sdk/anthropic": "^1.0.0",
+    "@ai-sdk/openai": "^1.0.0",
+    "@filoz/synapse-sdk": "^1.0.1",
     "@lighthouse-web3/sdk": "^0.4.6",
+    "ai": "^4.0.0",
     "dotenv": "^16.4.5",
     "ethers": "^6.17.0",
+    "viem": "^2.54.1",
     "zod": "^3.23.8"
   },
   "devDependencies": {
-    "typescript": "^5.5.4",
+    "@types/node": "^20.14.10",
     "tsx": "^4.16.2",
-    "@types/node": "^20.14.10"
+    "typescript": "^5.5.4"
   },
   "engines": {
     "node": ">=18"

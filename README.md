@@ -24,25 +24,25 @@ Agent (Vercel AI SDK)
  ├─ Provider: OpenAI (gpt-4o)      ─┐
  ├─ Provider: Anthropic (Claude)   ─┤  swappable — same tool interface
  └─ Tools:
-      save_memory   → encrypt → Lighthouse (Filecoin) → on-chain registry
-      load_memory   → on-chain lookup → Lighthouse fetch → decrypt → inject
-      log_action    → encrypt → Lighthouse (individual CID per action)
-      flush_action_log → batch manifest → Lighthouse + on-chain anchor
+      save_memory   → encrypt → Synapse SDK (Filecoin Onchain Cloud) → on-chain registry
+      load_memory   → on-chain lookup → Synapse download → decrypt → inject
+      log_action    → encrypt → Synapse (individual CID per action)
+      flush_action_log → batch manifest → Synapse + on-chain anchor
 ```
 
 ### How it works
 
 ```
 save_memory flow:
-  snapshot → JSON → AES-256-GCM encrypt(derived key) → lighthouse.uploadBuffer
+  snapshot → JSON → AES-256-GCM encrypt(derived key) → synapse.storage.upload
   → contract.updateMemory(cid, keccak256(plaintext)) → { cid, txHash }
 
 load_memory flow:
   contract.getMemory(wallet) → [cid, integrityHash]
-  → fetch(gateway/cid) → decrypt → verify keccak256 === integrityHash → snapshot
+  → synapse.storage.download(cid) → decrypt → verify keccak256 === integrityHash → snapshot
 
 log_action flow:
-  action record → encrypt → lighthouse.uploadBuffer → { cid, integrityHash }
+  action record → encrypt → synapse.storage.upload → { cid, integrityHash }
   (accumulated in memory, flushed on-chain via flush_action_log)
 ```
 
@@ -56,7 +56,7 @@ src/
 ├── echo/                       # TypeScript port of Echo SDK core
 │   ├── client.ts               # EchoClient: contract + storage + crypto
 │   ├── crypto.ts               # AES-256-GCM encrypt/decrypt + key derivation
-│   ├── storage.ts              # Lighthouse adapter (put/get to Filecoin)
+│   ├── storage.ts              # Storage adapters (Synapse SDK / Lighthouse)
 │   ├── abi.json                # EchoMemoryRegistry V3 contract ABI
 │   └── index.ts                # Barrel export
 └── tools/
@@ -78,9 +78,17 @@ Fill in `.env`:
 | `OPENAI_API_KEY` | Yes | https://platform.openai.com/api-keys |
 | `ANTHROPIC_API_KEY` | Yes | https://console.anthropic.com/settings/keys |
 | `ECHO_PRIVATE_KEY` | Yes | Your wallet private key (same as Echo deployment) |
-| `ECHO_LIGHTHOUSE_API_KEY` | Yes | https://files.lighthouse.storage |
 | `ECHO_REGISTRY_CONTRACT_ADDRESS` | Yes | Pre-filled in `.env.example` (Calibration testnet) |
 | `ECHO_RPC_URL` | Yes | Pre-filled in `.env.example` |
+| `ECHO_STORAGE_PROVIDER` | No | `synapse` (default, recommended) or `lighthouse` |
+| `ECHO_LIGHTHOUSE_API_KEY` | Only if lighthouse | https://files.lighthouse.storage |
+
+### Wallet funding (Calibration testnet)
+
+The wallet needs tFIL for gas and tUSDFC for storage payments:
+
+1. **tFIL**: https://faucet.calibnet.chainsafe-fil.io — paste your wallet address
+2. **tUSDFC**: https://forest-explorer.chainsafe.dev/faucet/calibration
 
 ## Run the demo
 
@@ -139,6 +147,7 @@ could quietly change.
 ## Tech stack
 
 - **Agent framework:** Vercel AI SDK (`ai`, `@ai-sdk/openai`, `@ai-sdk/anthropic`)
-- **Memory + proofs:** Echo SDK (AES-256-GCM encryption, Filecoin/FVM on-chain registry, Lighthouse storage)
+- **Memory + proofs:** Echo SDK (AES-256-GCM encryption, Filecoin/FVM on-chain registry)
+- **Storage:** Synapse SDK (@filoz/synapse-sdk) — Filecoin Onchain Cloud with PDP proofs
 - **Smart contract:** EchoMemoryRegistry V3 (UUPS upgradeable, OpenZeppelin v5)
 - **Language:** TypeScript / Node 18+

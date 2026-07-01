@@ -14,7 +14,7 @@
  */
 
 import { ethers } from "ethers";
-import { EchoClient, createLighthouseStorage, deriveKeyFromPrivateKey } from "../echo/index.js";
+import { EchoClient, createSynapseStorage, createLighthouseStorage, deriveKeyFromPrivateKey } from "../echo/index.js";
 
 export interface MemorySnapshot {
   sessionId: string;
@@ -61,6 +61,7 @@ export class EchoMemoryClient {
     contractAddress?: string;
     rpcUrl?: string;
     lighthouseApiKey?: string;
+    storageProvider?: string;
   };
 
   constructor(opts: {
@@ -68,6 +69,7 @@ export class EchoMemoryClient {
     contractAddress?: string;
     rpcUrl?: string;
     lighthouseApiKey?: string;
+    storageProvider?: string;
   }) {
     this.opts = opts;
   }
@@ -77,11 +79,11 @@ export class EchoMemoryClient {
       return { client: this.client, encryptionKey: this.encryptionKey };
     }
 
-    const { privateKey, contractAddress, rpcUrl, lighthouseApiKey } = this.opts;
-    if (!privateKey || !contractAddress || !rpcUrl || !lighthouseApiKey) {
+    const { privateKey, contractAddress, rpcUrl, lighthouseApiKey, storageProvider } = this.opts;
+    if (!privateKey || !contractAddress || !rpcUrl) {
       throw new Error(
         "Missing Echo config. Set ECHO_PRIVATE_KEY, ECHO_REGISTRY_CONTRACT_ADDRESS, " +
-        "ECHO_RPC_URL, and ECHO_LIGHTHOUSE_API_KEY in .env"
+        "and ECHO_RPC_URL in .env"
       );
     }
 
@@ -89,7 +91,12 @@ export class EchoMemoryClient {
     const wallet = new ethers.Wallet(privateKey, provider);
     this.walletAddress = wallet.address;
 
-    const storage = createLighthouseStorage(lighthouseApiKey);
+    const useSynapse = storageProvider !== "lighthouse";
+    const storage = useSynapse
+      ? createSynapseStorage(privateKey)
+      : createLighthouseStorage(lighthouseApiKey ?? "");
+
+    console.log(`[echo] using ${useSynapse ? "Synapse SDK (Filecoin Onchain Cloud)" : "Lighthouse"} for storage`);
     this.client = new EchoClient(rpcUrl, contractAddress, wallet, storage);
     this.encryptionKey = deriveKeyFromPrivateKey(privateKey);
 
@@ -106,7 +113,7 @@ export class EchoMemoryClient {
 
     console.log(`[echo] encrypting + saving snapshot for session ${snapshot.sessionId}...`);
     const result = await client.saveMemory(snapshot, encryptionKey);
-    console.log(`[echo] saved to Filecoin. CID=${result.cid} tx=${result.txHash}`);
+    console.log(`[echo] saved to Filecoin. CID=${result.cid}${result.txHash ? ` tx=${result.txHash}` : " (off-chain only)"}`);
 
     return {
       cid: result.cid,

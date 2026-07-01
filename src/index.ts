@@ -10,6 +10,7 @@ const echo = new EchoMemoryClient({
   contractAddress: process.env.ECHO_REGISTRY_CONTRACT_ADDRESS,
   rpcUrl: process.env.ECHO_RPC_URL,
   lighthouseApiKey: process.env.ECHO_LIGHTHOUSE_API_KEY,
+  storageProvider: process.env.ECHO_STORAGE_PROVIDER,
 });
 
 async function main() {
