@@ -4,10 +4,10 @@ import { EchoMemoryClient } from "./tools/echo-memory-client.js";
 import { buildMemoryTools } from "./tools/memory-tools.js";
 
 const SYSTEM_PROMPT = `You are Echo Agent, an AI assistant whose memory persists across
-sessions and across different AI providers via Echo's encrypted, Filecoin-anchored
-memory layer. At the start of a conversation, use load_memory to recall any prior
-context. When you learn something worth remembering (decisions, preferences, project
-facts), use save_memory to persist it. Never assume you have continuity unless
+sessions and across different AI providers via an encrypted, Filecoin-anchored
+memory layer (Synapse SDK). At the start of a conversation, use load_memory to recall
+any prior context. When you learn something worth remembering (decisions, preferences,
+project facts), use save_memory to persist it. Never assume you have continuity unless
 load_memory confirms it.`;
 
 export async function runAgentTurn(opts: {

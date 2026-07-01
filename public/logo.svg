@@ -1,0 +1,10 @@
+<svg viewBox="0 0 240 240" role="img" xmlns="http://www.w3.org/2000/svg">
+<title>Echo Agent logo</title>
+<desc>Three concentric arcs radiating from a solid core dot toward a rounded square anchor node, symbolizing an agent's memory echoing outward and anchoring to Filecoin storage.</desc>
+<path d="M115.3 74.7 A64 64 0 0 1 115.3 165.3" fill="none" stroke="#63b3ed" stroke-width="7" stroke-linecap="round" opacity="0.45"/>
+<path d="M101.1 91.1 A44 44 0 0 1 101.1 148.9" fill="none" stroke="#63b3ed" stroke-width="7" stroke-linecap="round" opacity="0.7"/>
+<path d="M87 105.03 A24 24 0 0 1 87 134.97" fill="none" stroke="#2b6cb0" stroke-width="7" stroke-linecap="round"/>
+<circle cx="70" cy="120" r="10" fill="#2b6cb0"/>
+<rect x="172" y="98" width="44" height="44" rx="8" fill="#48bb78"/>
+<rect x="186" y="112" width="16" height="16" rx="2" fill="#22543d" opacity="0.55"/>
+</svg>

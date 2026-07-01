@@ -1,7 +1,7 @@
-import { openai } from "@ai-sdk/openai";
-import { anthropic } from "@ai-sdk/anthropic";
+import { google } from "@ai-sdk/google";
+import { groq } from "@ai-sdk/groq";
 
-export type ProviderName = "openai" | "anthropic";
+export type ProviderName = "gemini" | "groq";
 
 /**
  * Returns a Vercel AI SDK model instance for the requested provider.
@@ -10,10 +10,10 @@ export type ProviderName = "openai" | "anthropic";
  */
 export function getModel(provider: ProviderName) {
   switch (provider) {
-    case "openai":
-      return openai("gpt-4o");
-    case "anthropic":
-      return anthropic("claude-sonnet-4-5");
+    case "gemini":
+      return google("gemini-2.5-flash-lite");
+    case "groq":
+      return groq("llama-3.3-70b-versatile");
     default:
       throw new Error(`Unknown provider: ${provider}`);
   }

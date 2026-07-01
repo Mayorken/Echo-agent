@@ -1,81 +1,51 @@
 import "dotenv/config";
-import { CoreMessage } from "ai";
-import { runAgentTurn } from "./agent.js";
 import { EchoMemoryClient } from "./tools/echo-memory-client.js";
+import { runSwitchDemo, DemoEvent } from "./demo.js";
 
 const SESSION_ID = process.env.ECHO_AGENT_SESSION_ID ?? "demo-session-001";
 
 const echo = new EchoMemoryClient({
-  privateKey: process.env.ECHO_PRIVATE_KEY,
-  contractAddress: process.env.ECHO_REGISTRY_CONTRACT_ADDRESS,
-  rpcUrl: process.env.ECHO_RPC_URL,
+  privateKey: process.env.SYNAPSE_PRIVATE_KEY,
+  rpcUrl: process.env.SYNAPSE_RPC_URL,
 });
+
+function printEvent(event: DemoEvent) {
+  switch (event.type) {
+    case "phase-start":
+      if (event.phase === "gemini") console.log("\n=== PHASE 1: Agent running on Gemini ===\n");
+      if (event.phase === "bridge") console.log("\n--- Simulating process kill: clearing all local state ---\n");
+      if (event.phase === "groq") console.log("=== PHASE 2: Fresh agent instance, running on Groq ===\n");
+      break;
+    case "gemini-done":
+      console.log("[Gemini agent]:", event.text);
+      if (event.commp) console.log(`(saved to Filecoin, CommP=${event.commp})`);
+      break;
+    case "groq-done":
+      console.log("[Groq agent]:", event.text);
+      console.log(
+        event.recalled
+          ? "\n=== Groq recalled the project details with zero re-explaining. Demo worked. ==="
+          : "\n=== Groq did not recall prior memory. Something's off. ==="
+      );
+      break;
+    case "error":
+      console.error(`\n[${event.phase}] ERROR: ${event.message}`);
+      break;
+    case "complete":
+      break;
+  }
+}
 
 async function main() {
   const args = process.argv.slice(2);
   const isSwitchDemo = args.includes("--demo=switch");
 
   if (isSwitchDemo) {
-    await runSwitchDemo();
+    await runSwitchDemo({ echo, sessionId: SESSION_ID, emit: printEvent });
     return;
   }
 
-  console.log("Run with --demo=switch to see the provider-switch demo.");
-}
-
-/**
- * THE MONEY SHOT.
- * Phase 1: agent runs on OpenAI, does some work, saves memory to Echo.
- * Phase 2: simulate killing the process (new messages array, no shared
- *          in-memory state) and resuming on Anthropic. The only way
- *          phase 2 knows anything from phase 1 is via load_memory ->
- *          Echo -> Filecoin.
- */
-async function runSwitchDemo() {
-  console.log("\n=== PHASE 1: Agent running on OpenAI ===\n");
-
-  const phase1Messages: CoreMessage[] = [
-    {
-      role: "user",
-      content:
-        "I'm building Echo, a portable memory layer on Filecoin. Remember that I prefer " +
-        "TypeScript, I'm targeting the FilecoinTLDR Cycle 2 challenge deadline of July 10, " +
-        "and my main contract is EchoContextRegistry.sol with UUPS upgradeability. " +
-        "Save this to memory.",
-    },
-  ];
-
-  const result1 = await runAgentTurn({
-    provider: "openai",
-    sessionId: SESSION_ID,
-    echo,
-    messages: phase1Messages,
-  });
-
-  console.log("\n[OpenAI agent]:", result1.text);
-
-  console.log("\n--- Simulating process kill: clearing all local state ---\n");
-  // In a real demo, this would be a literal process exit + restart.
-  // Here we just throw away phase1Messages and any in-memory state.
-
-  console.log("=== PHASE 2: Fresh agent instance, running on Anthropic (Claude) ===\n");
-
-  const phase2Messages: CoreMessage[] = [
-    {
-      role: "user",
-      content: "What do you know about my project? Load your memory first.",
-    },
-  ];
-
-  const result2 = await runAgentTurn({
-    provider: "anthropic",
-    sessionId: SESSION_ID,
-    echo,
-    messages: phase2Messages,
-  });
-
-  console.log("\n[Claude agent]:", result2.text);
-  console.log("\n=== If Claude recalled the project details with zero re-explaining, the demo worked. ===\n");
+  console.log("Run with --demo=switch to see the provider-switch demo, or `npm run demo:web` for the web UI.");
 }
 
 main().catch((err) => {

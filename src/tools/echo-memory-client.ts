@@ -1,56 +1,109 @@
 /**
  * EchoMemoryClient
  * ------------------------------------------------------------------
- * Thin wrapper around the existing Echo SDK (github.com/Mayorken/Echo).
- * This is the ONLY file that should need editing to wire in the real
- * Echo SDK calls — everything else (agent.ts, tools, index.ts) talks
- * to this interface and doesn't care how memory is actually stored.
+ * Wraps the Synapse SDK (github.com/FilOzone/synapse-sdk) to persist
+ * agent memory snapshots on Filecoin Onchain Cloud (Warm Storage).
  *
- * TODO(kenneth): replace the stub bodies below with real calls into
- * the Echo SDK, e.g.:
- *   import { EchoClient } from "echo-sdk";
- *   const echo = new EchoClient({ privateKey, contractAddress, rpcUrl });
- *   await echo.saveContext(sessionId, payload);   // encrypt + write
- *   await echo.loadContext(sessionId);            // fetch + decrypt
+ * Snapshots are AES-256-GCM encrypted client-side before upload, so
+ * Synapse's storage providers only ever see ciphertext. Synapse hands
+ * back a CommP per upload; we keep a small local pointer file
+ * (sessionId -> latest CommP) as a stand-in for the on-chain
+ * registry contract (EchoContextRegistry.sol) until that piece is
+ * wired in — everything else (encryption, storage, retrieval) is real.
  * ------------------------------------------------------------------
  */
+
+import { randomBytes, createCipheriv, createDecipheriv, createHash } from "node:crypto";
+import { readFile, writeFile, mkdir } from "node:fs/promises";
+import path from "node:path";
+import { http, type Hex } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
+import { Synapse } from "@filoz/synapse-sdk";
 
 export interface MemorySnapshot {
   sessionId: string;
   summary: string;          // human-readable rolling summary of the conversation
   facts: string[];          // discrete facts/preferences the agent has learned
-  lastProvider: "openai" | "anthropic";
+  lastProvider: "gemini" | "groq";
   updatedAt: string;        // ISO timestamp
 }
 
 export interface MemoryReceipt {
-  cid: string;        // Filecoin content identifier
-  txHash: string;     // on-chain registry transaction hash
+  commp: string;      // Filecoin CommP (piece commitment) returned by Synapse upload
   verified: boolean;
 }
 
+const POINTER_FILE = path.resolve(process.cwd(), ".data", "session-pointers.json");
+
 export class EchoMemoryClient {
+  private synapse?: Synapse;
+
   constructor(private opts: {
     privateKey?: string;
-    contractAddress?: string;
     rpcUrl?: string;
   }) {}
 
+  private getSynapse(): Synapse {
+    if (!this.synapse) {
+      if (!this.opts.privateKey) {
+        throw new Error("SYNAPSE_PRIVATE_KEY is required to talk to Filecoin Onchain Cloud.");
+      }
+      const account = privateKeyToAccount(this.opts.privateKey as Hex);
+      this.synapse = Synapse.create({
+        account,
+        transport: this.opts.rpcUrl ? http(this.opts.rpcUrl) : undefined,
+        source: "echo-agent",
+      });
+    }
+    return this.synapse;
+  }
+
   /**
-   * Encrypts and persists a memory snapshot via Echo, anchoring a
-   * reference on-chain. Returns a receipt the agent/demo can display.
+   * Encrypts and persists a memory snapshot via Synapse. Returns a
+   * receipt (PieceCID) the agent/demo can display and use to recall
+   * the snapshot later.
    */
   async save(snapshot: MemorySnapshot): Promise<MemoryReceipt> {
-    // --- STUB: replace with real Echo SDK call ---
-    console.log(`[echo] encrypting + saving snapshot for session ${snapshot.sessionId}...`);
-    await fakeLatency();
-    const receipt: MemoryReceipt = {
-      cid: `bafy${randomHex(40)}`,
-      txHash: `0x${randomHex(64)}`,
-      verified: true,
-    };
-    console.log(`[echo] saved. CID=${receipt.cid} tx=${receipt.txHash}`);
-    return receipt;
+    const synapse = this.getSynapse();
+    const plaintext = Buffer.from(JSON.stringify(snapshot), "utf8");
+    const ciphertext = encrypt(plaintext, this.encryptionKey());
+
+    console.log(`[synapse] uploading encrypted snapshot for session ${snapshot.sessionId}...`);
+    const result = await this.uploadWithFallback(synapse, ciphertext);
+    console.log(`[synapse] uploaded. PieceCID=${result.pieceCid}`);
+
+    await this.setPointer(snapshot.sessionId, String(result.pieceCid));
+
+    return { commp: String(result.pieceCid), verified: true };
+  }
+
+  /**
+   * Synapse's default upload path requires one of a small "endorsed"
+   * provider set to pass a live health check. On calibration testnet
+   * those endorsed providers are frequently down, so on that specific
+   * failure we retry against other active providers in turn (some listed
+   * providers are unreliable dev/test nodes, so one candidate isn't enough).
+   */
+  private async uploadWithFallback(synapse: Synapse, data: Uint8Array) {
+    try {
+      return await synapse.storage.upload(data);
+    } catch (err) {
+      if (!isRecoverableProviderError(err)) throw err;
+
+      console.log("[synapse] endorsed providers unhealthy, trying other active providers...");
+      const active = await synapse.providers.getAllActiveProviders();
+      let lastErr = err;
+
+      for (const provider of active.filter((p) => p.isActive)) {
+        try {
+          console.log(`[synapse] trying provider ${provider.id} (${provider.name})...`);
+          return await synapse.storage.upload(data, { providerIds: [provider.id] });
+        } catch (candidateErr) {
+          lastErr = candidateErr;
+        }
+      }
+      throw lastErr;
+    }
   }
 
   /**
@@ -59,18 +112,71 @@ export class EchoMemoryClient {
    * provider with no local state.
    */
   async load(sessionId: string): Promise<MemorySnapshot | null> {
-    // --- STUB: replace with real Echo SDK call ---
-    console.log(`[echo] fetching + decrypting snapshot for session ${sessionId}...`);
-    await fakeLatency();
-    return null; // replace with actual decrypted snapshot
+    const commp = await this.getPointer(sessionId);
+    if (!commp) return null;
+
+    const synapse = this.getSynapse();
+    console.log(`[synapse] downloading snapshot ${commp} for session ${sessionId}...`);
+    const ciphertext = await synapse.storage.download({ pieceCid: commp });
+    const plaintext = decrypt(Buffer.from(ciphertext), this.encryptionKey());
+
+    return JSON.parse(plaintext.toString("utf8")) as MemorySnapshot;
+  }
+
+  private encryptionKey(): Buffer {
+    const secret = process.env.ECHO_ENCRYPTION_KEY;
+    if (!secret) {
+      throw new Error("ECHO_ENCRYPTION_KEY is required to encrypt/decrypt memory snapshots.");
+    }
+    // Derive a 32-byte AES-256 key from whatever passphrase the user configured.
+    return createHash("sha256").update(secret).digest();
+  }
+
+  private async getPointer(sessionId: string): Promise<string | undefined> {
+    const pointers = await this.readPointers();
+    return pointers[sessionId];
+  }
+
+  private async setPointer(sessionId: string, commp: string): Promise<void> {
+    const pointers = await this.readPointers();
+    pointers[sessionId] = commp;
+    await mkdir(path.dirname(POINTER_FILE), { recursive: true });
+    await writeFile(POINTER_FILE, JSON.stringify(pointers, null, 2), "utf8");
+  }
+
+  private async readPointers(): Promise<Record<string, string>> {
+    try {
+      const raw = await readFile(POINTER_FILE, "utf8");
+      return JSON.parse(raw);
+    } catch {
+      return {};
+    }
   }
 }
 
-function randomHex(len: number): string {
-  const chars = "0123456789abcdef";
-  return Array.from({ length: len }, () => chars[Math.floor(Math.random() * 16)]).join("");
+function isRecoverableProviderError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return (
+    message.includes("No endorsed provider available") ||
+    message.includes("Failed to store on primary provider") ||
+    message.includes("Network request failed")
+  );
 }
 
-function fakeLatency(): Promise<void> {
-  return new Promise((res) => setTimeout(res, 400));
+function encrypt(plaintext: Buffer, key: Buffer): Buffer {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
+  const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+  const authTag = cipher.getAuthTag();
+  // Layout: iv (12) | authTag (16) | ciphertext
+  return Buffer.concat([iv, authTag, ciphertext]);
+}
+
+function decrypt(payload: Buffer, key: Buffer): Buffer {
+  const iv = payload.subarray(0, 12);
+  const authTag = payload.subarray(12, 28);
+  const ciphertext = payload.subarray(28);
+  const decipher = createDecipheriv("aes-256-gcm", key, iv);
+  decipher.setAuthTag(authTag);
+  return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
 }
